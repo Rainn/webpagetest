@@ -38,7 +38,7 @@ var video_hdmi = require('video_hdmi');
 var webdriver = require('selenium-webdriver');
 var webdriver_proxy = require('selenium-webdriver/proxy');
 
-var DEVTOOLS_SOCKET = 'localabstract:chrome_devtools_remote';
+var CHROME_DEVTOOLS_SOCKET = 'localabstract:chrome_devtools_remote';
 var PAC_PORT = 80;
 
 var CHROME_FLAGS = [
@@ -90,10 +90,18 @@ function BrowserAndroidChrome(app, args) {
   }
   this.deviceSerial_ = args.deviceSerial;
   this.shouldInstall_ = (1 === parseInt(args.runNumber || '1', 10));
-  this.chrome_ = args.chrome;  // Chrome.apk.
+  this.chrome_ = args.customBrowser || args.chrome;  // Chrome.apk.
   this.chromedriver_ = args.chromedriver;
   if (args.chromePackage) {
     this.chromePackage_ = args.chromePackage;
+  } else if (args.customBrowser) {
+    // For now, custom browsers can only be chromium test shells.
+    // TODO(pmeenan): Add support for all of this to be specified with the apk
+    this.chromePackage_ = 'org.chromium.chrome.testshell';
+    args.chromeActivity =
+        'org.chromium.chrome.testshell.ChromiumTestShellActivity';
+    args.flagsFile = '/data/local/tmp/chromium-testshell-command-line';
+    args.devToolsSocket = 'localabstract:chromium_testshell_devtools_remote';
   } else if (args.options && args.options.browserName) {
     var browserName = args.options.browserName;
     var separator = browserName.lastIndexOf('-');
@@ -104,8 +112,10 @@ function BrowserAndroidChrome(app, args) {
   }
   this.chromePackage_ = this.chromePackage_ || 'com.android.chrome';
   this.chromeActivity_ =
-      args.chromeActivity || 'com.google.android.apps.chrome';
+      args.chromeActivity || 'com.google.android.apps.chrome.Main';
+  this.flagsFile_ = args.flagsFile || '/data/local/chrome-command-line';
   this.devToolsPort_ = args.devToolsPort;
+  this.devToolsSocket_ = args.devToolsSocket || CHROME_DEVTOOLS_SOCKET;
   this.devtoolsPortLock_ = undefined;
   this.devToolsUrl_ = undefined;
   this.serverPort_ = args.serverPort;
@@ -204,7 +214,7 @@ BrowserAndroidChrome.prototype.startBrowser = function() {
 
   // Flush the DNS cache
   this.adb_.su(['ndc', 'resolver', 'flushdefaultif']);
-  var activity = this.chromePackage_ + '/' + this.chromeActivity_ + '.Main';
+  var activity = this.chromePackage_ + '/' + this.chromeActivity_;
   this.adb_.shell(['am', 'start', '-n', activity, '-d', 'about:blank']);
   // TODO(wrightt): check start error
   this.scheduleConfigureDevToolsPort_();
@@ -298,7 +308,6 @@ BrowserAndroidChrome.prototype.scheduleNeedsXvfb_ = function() {
  */
 BrowserAndroidChrome.prototype.scheduleSetStartupFlags_ = function() {
   'use strict';
-  var flagsFile = '/data/local/chrome-command-line';
   var flags = CHROME_FLAGS.concat('--enable-remote-debugging');
   if (this.pac_) {
     flags.push('--proxy-pac-url=http://127.0.0.1:' + PAC_PORT + '/from_netcat');
@@ -307,7 +316,8 @@ BrowserAndroidChrome.prototype.scheduleSetStartupFlags_ = function() {
       flags.push('--explicitly-allowed-ports=' + PAC_PORT);
     }
   }
-  this.adb_.su(['echo \\"chrome ' + flags.join(' ') + '\\" > ' + flagsFile]);
+  this.adb_.su(['echo \\"chrome ' + flags.join(' ') + '\\" > ' +
+      this.flagsFile_]);
 };
 
 /**
@@ -367,7 +377,7 @@ BrowserAndroidChrome.prototype.scheduleConfigureDevToolsPort_ = function() {
       // when the above scheduled port allocation completes.
       this.app_.schedule('Forward DevTools socket to local port', function() {
         this.adb_.adb(
-            ['forward', 'tcp:' + this.devToolsPort_, DEVTOOLS_SOCKET]);
+            ['forward', 'tcp:' + this.devToolsPort_, this.devToolsSocket_]);
       }.bind(this));
       // Make sure we set devToolsUrl_ only after the adb forward succeeds.
       this.app_.schedule('Set DevTools URL', function() {

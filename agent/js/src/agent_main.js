@@ -247,6 +247,7 @@ Agent.prototype.startJobRun_ = function(job) {
         imageQuality: job.task.imageQuality,
         captureTimeline: job.task.timeline,
         timelineStackDepth: job.task.timelineStackDepth,
+        customBrowser: job.customBrowser,
         script: script,
         url: url,
         pac: pac,

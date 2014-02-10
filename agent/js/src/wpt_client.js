@@ -27,6 +27,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
 var events = require('events');
+var crypto = require('crypto');
 var fs = require('fs');
 var http = require('http');
 var logger = require('logger');
@@ -35,6 +36,7 @@ var path = require('path');
 var url = require('url');
 var util = require('util');
 var Zip = require('node-zip');
+var webdriver = require('selenium-webdriver');
 
 /** Allow tests to stub out . */
 exports.process = process;
@@ -250,6 +252,7 @@ function Client(app, args) {
   this.onAbortJob = undefined;
   this.onIsReady = undefined;
   this.handlingUncaughtException_ = undefined;
+  this.workDir_ = 'work_' + (args.deviceSerial ? args.deviceSerial : args.name);
 
   exports.process.on('uncaughtException', this.onUncaughtException_.bind(this));
 
@@ -371,7 +374,13 @@ Client.prototype.processJobResponse_ = function(responseBody) {
     // ControlFlow has circular references to us through its queue.
     return ('app_' === name) ? '<REDACTED>' : value;
   }));
-  this.startNextRun_(job);
+  this.schedulePrepareJob_(job).then(function() {
+    this.startNextRun_(job);
+  }.bind(this), function(e) {
+    this.currentJob_ = job;
+    job.error = e.message;
+    this.abortJob_(job);
+  }.bind(this));
 };
 
 /**
@@ -386,6 +395,83 @@ Client.prototype.abortJob_ = function(job) {
   } else {
     job.runFinished(/*isRunFinished=*/true);
   }
+};
+
+/**
+ * Do any pre-processing necessary for the given job
+ * @param job
+ * @private
+ *
+ * @return {webdriver.promise.Promise} The scheduled promise.
+ */
+Client.prototype.schedulePrepareJob_ = function(job) {
+  var done = new webdriver.promise.Deferred();
+  if (job.task.customBrowserUrl && job.task.customBrowserMD5) {
+    var browserName = path.basename(job.task.customBrowserUrl);
+    logger.debug("Custom Browser: " + browserName);
+    if (!fs.existsSync(this.workDir_))
+      fs.mkdirSync(this.workDir_);
+    if (!fs.existsSync(this.workDir_ + '/browsers'))
+      fs.mkdirSync(this.workDir_ + '/browsers', parseInt('0755', 8));
+    job.customBrowser = this.workDir_ + '/browsers/' + browserName;
+    if (!fs.existsSync(job.customBrowser)) {
+      logger.debug("Custom Browser not available, downloading from " +
+                   job.task.customBrowserUrl);
+      var tempFile = job.customBrowser + '.tmp';
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+      var md5 = crypto.createHash('md5');
+      var file = fs.createWriteStream(tempFile);
+      var request = http.get(job.task.customBrowserUrl, function(response) {
+        response.on('data', function(chunk) {
+          md5.update(chunk);
+          file.write(chunk);
+        }.bind(this));
+        response.on('error', function(e) {
+          logger.warn('Got error: ' + e.message);
+          file.end();
+          done.reject(e instanceof Error ? e : new Error(e));
+        }.bind(this));
+        response.on('end', function() {
+          file.end();
+          var md5hex = md5.digest('hex').toUpperCase();
+          logger.debug('Finished download (on end) - md5: ' + md5hex);
+          if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
+            fs.renameSync(tempFile, job.customBrowser);
+            done.fulfill();
+          } else {
+            file.end();
+            done.reject(new Error('Failed to download custom browser.'));
+          }
+        }.bind(this));
+        response.on('close', function() {
+          file.end();
+          var md5hex = md5.digest('hex').toUpperCase();
+          logger.debug('Finished download (on close) - md5: ' + md5hex);
+          if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
+            fs.renameSync(tempFile, job.customBrowser);
+            done.fulfill();
+          } else {
+            file.end();
+            done.reject(new Error('Failed to download custom browser.'));
+          }
+        }.bind(this));
+      }.bind(this));
+      request.on('error', function(e) {
+        logger.warn('Got error: ' + e.message);
+        file.end();
+        done.reject(e instanceof Error ? e : new Error(e));
+      }.bind(this));
+      request.end();
+    } else {
+      logger.debug("Custom Browser already available");
+      done.fulfill();
+    }
+  } else {
+    done.fulfill();
+  }
+  return done;
 };
 
 /**
