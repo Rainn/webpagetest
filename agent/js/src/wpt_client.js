@@ -444,7 +444,6 @@ Client.prototype.finishRun_ = function(job, isRunFinished) {
   if (this.currentJob_ === job) {
     global.clearTimeout(this.timeoutTimer_);
     this.timeoutTimer_ = undefined;
-    this.currentJob_ = undefined;
     if (0 === job.runNumber) {  // Do not submit a WebPageReplay recording run.
       this.endOfRun_(job, isRunFinished, /*e=*/undefined);
     } else {
@@ -474,6 +473,7 @@ Client.prototype.endOfRun_ = function(job, isRunFinished, e) {
   // Run until we finish the last iteration.
   // Do not increment job.runNumber past job.runs.
   if (e || (isRunFinished && job.runNumber === job.runs)) {
+    this.currentJob_ = undefined;
     this.emit('done', job);
   } else {
     // Continue running
