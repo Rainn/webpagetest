@@ -74,9 +74,6 @@ function Agent(app, client, flags) {
   // The directory to store run result files. Clean it up before+after each run.
   // We want a fixed name, to avoid leaving junk after agent crashes/restarts.
   var runTempSuffix = flags.name || flags.deviceSerial || '';
-  if (!/^[a-z0-9]*$/i.test(runTempSuffix)) {
-    throw new Error('--deviceSerial may contain only letters and digits');
-  }
   this.runTempDir_ = 'runtmp' + (runTempSuffix ? '_' + runTempSuffix : '');
   this.workDir_ = 'work' + (runTempSuffix ? '_' + runTempSuffix : '');
   this.wdServer_ = undefined;  // The wd_server child process.
