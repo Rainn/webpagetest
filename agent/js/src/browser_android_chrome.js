@@ -85,6 +85,8 @@ function BrowserAndroidChrome(app, args) {
   'use strict';
   browser_base.BrowserBase.call(this, app);
   logger.info('BrowserAndroidChrome(%j)', args);
+  args.options = args.options || {};
+  args.options.task = args.options.task || {};
   if (!args.deviceSerial) {
     throw new Error('Missing deviceSerial');
   }
@@ -92,17 +94,7 @@ function BrowserAndroidChrome(app, args) {
   this.shouldInstall_ = (1 === parseInt(args.runNumber || '1', 10));
   this.chrome_ = args.customBrowser || args.chrome;  // Chrome.apk.
   this.chromedriver_ = args.chromedriver;
-  if (args.chromePackage) {
-    this.chromePackage_ = args.chromePackage;
-  } else if (args.customBrowser) {
-    // For now, custom browsers can only be chromium test shells.
-    // TODO(pmeenan): Add support for all of this to be specified with the apk
-    this.chromePackage_ = 'org.chromium.chrome.testshell';
-    args.chromeActivity =
-        'org.chromium.chrome.testshell.ChromiumTestShellActivity';
-    args.flagsFile = '/data/local/tmp/chromium-testshell-command-line';
-    args.devToolsSocket = 'localabstract:chromium_testshell_devtools_remote';
-  } else if (args.options && args.options.browserName) {
+  if (args.options.browserName) {
     var browserName = args.options.browserName;
     var separator = browserName.lastIndexOf('-');
     if (separator >= 0) {
@@ -110,12 +102,15 @@ function BrowserAndroidChrome(app, args) {
     }
     this.chromePackage_ = KNOWN_BROWSERS[browserName];
   }
-  this.chromePackage_ = this.chromePackage_ || 'com.android.chrome';
-  this.chromeActivity_ =
+  this.chromePackage_ = args.options.task.customBrowser_package ||
+      args.chromePackage_ || this.chromePackage_ || 'com.android.chrome';
+  this.chromeActivity_ = args.options.task.customBrowser_activity ||
       args.chromeActivity || 'com.google.android.apps.chrome.Main';
-  this.flagsFile_ = args.flagsFile || '/data/local/chrome-command-line';
+  this.flagsFile_ = args.options.task.customBrowser_flagsFile ||
+      args.flagsFile || '/data/local/chrome-command-line';
   this.devToolsPort_ = args.devToolsPort;
-  this.devToolsSocket_ = args.devToolsSocket || CHROME_DEVTOOLS_SOCKET;
+  this.devToolsSocket_ = args.options.task.customBrowser_socket ||
+      args.devToolsSocket || CHROME_DEVTOOLS_SOCKET;
   this.devtoolsPortLock_ = undefined;
   this.devToolsUrl_ = undefined;
   this.serverPort_ = args.serverPort;

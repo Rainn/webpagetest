@@ -238,7 +238,7 @@ Agent.prototype.startJobRun_ = function(job) {
   this.scheduleNoFault_('Send IPC "run"', function() {
     var message = {
         cmd: 'run',
-        options: {browserName: job.task.browser},
+        options: {browserName: job.task.browser, task: job.task},
         runNumber: job.runNumber,
         exitWhenDone: job.isFirstViewOnly || job.isCacheWarm,
         captureVideo: job.captureVideo,
