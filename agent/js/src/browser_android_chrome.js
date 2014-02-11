@@ -311,8 +311,8 @@ BrowserAndroidChrome.prototype.scheduleSetStartupFlags_ = function() {
       flags.push('--explicitly-allowed-ports=' + PAC_PORT);
     }
   }
-  this.adb_.su(['echo \\"chrome ' + flags.join(' ') + '\\" > ' +
-      this.flagsFile_]);
+  this.adb_.su([
+    'echo \\"chrome ' + flags.join(' ') + '\\" > ' + this.flagsFile_]);
 };
 
 /**

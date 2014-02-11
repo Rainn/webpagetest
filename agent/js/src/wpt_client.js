@@ -252,7 +252,7 @@ function Client(app, args) {
   this.onAbortJob = undefined;
   this.onIsReady = undefined;
   this.handlingUncaughtException_ = undefined;
-  this.workDir_ = 'work_' + (args.deviceSerial ? args.deviceSerial : args.name);
+  this.workDir_ = 'work_' + (args.name || args.deviceSerial);
 
   exports.process.on('uncaughtException', this.onUncaughtException_.bind(this));
 
@@ -398,11 +398,11 @@ Client.prototype.abortJob_ = function(job) {
 };
 
 /**
- * Do any pre-processing necessary for the given job
+ * Do any pre-processing necessary for the given job.
+ * 
  * @param job
- * @private
- *
  * @return {webdriver.promise.Promise} The scheduled promise.
+ * @private
  */
 Client.prototype.schedulePrepareJob_ = function(job) {
   var done = new webdriver.promise.Deferred();
@@ -411,58 +411,58 @@ Client.prototype.schedulePrepareJob_ = function(job) {
     logger.debug("Custom Browser: " + browserName);
     if (!fs.existsSync(this.workDir_))
       fs.mkdirSync(this.workDir_);
-    if (!fs.existsSync(this.workDir_ + '/browsers'))
-      fs.mkdirSync(this.workDir_ + '/browsers', parseInt('0755', 8));
-    job.customBrowser = this.workDir_ + '/browsers/' + browserName;
+    if (!fs.existsSync(path.join(this.workDir_, '/browsers')))
+      fs.mkdirSync(path.join(this.workDir_, '/browsers'), parseInt('0755', 8));
+    job.customBrowser = path.join(this.workDir_, 'browsers', browserName);
     if (!fs.existsSync(job.customBrowser)) {
+      // TODO(pmeenan): Implement a cleanup that deletes custom browsers
+      // that haven't been used in a while
       logger.debug("Custom Browser not available, downloading from " +
                    job.task.customBrowserUrl);
       var tempFile = job.customBrowser + '.tmp';
       if (fs.existsSync(tempFile)) {
         fs.unlinkSync(tempFile);
       }
+      var active = true;
       var md5 = crypto.createHash('md5');
       var file = fs.createWriteStream(tempFile);
+      var onError = function(e) {
+        if (active) {
+          active = false;
+          file.end();
+          fs.unlinkSync(tempFile);
+          e.message = 'Custom browser download failure from ' +
+                      job.task.customBrowserUrl + ': ' + e.message;
+          logger.warn(e.message);
+          done.reject(e);
+        }
+      }.bind(this);
+      var onDone = function() {
+        if (active) {
+          active = false;
+          file.end();
+          var md5hex = md5.digest('hex').toUpperCase();
+          logger.debug('Finished download - md5: ' + md5hex);
+          if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
+            fs.renameSync(tempFile, job.customBrowser);
+            done.fulfill();
+          } else {
+            fs.unlinkSync(tempFile);
+            done.reject(new Error('Failed to download custom browser from ' +
+                                  job.task.customBrowserUrl));
+          }
+        }
+      }.bind(this);
       var request = http.get(job.task.customBrowserUrl, function(response) {
+        response.pipe(file);
         response.on('data', function(chunk) {
           md5.update(chunk);
-          file.write(chunk);
         }.bind(this));
-        response.on('error', function(e) {
-          logger.warn('Got error: ' + e.message);
-          file.end();
-          done.reject(e instanceof Error ? e : new Error(e));
-        }.bind(this));
-        response.on('end', function() {
-          file.end();
-          var md5hex = md5.digest('hex').toUpperCase();
-          logger.debug('Finished download (on end) - md5: ' + md5hex);
-          if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
-            fs.renameSync(tempFile, job.customBrowser);
-            done.fulfill();
-          } else {
-            file.end();
-            done.reject(new Error('Failed to download custom browser.'));
-          }
-        }.bind(this));
-        response.on('close', function() {
-          file.end();
-          var md5hex = md5.digest('hex').toUpperCase();
-          logger.debug('Finished download (on close) - md5: ' + md5hex);
-          if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
-            fs.renameSync(tempFile, job.customBrowser);
-            done.fulfill();
-          } else {
-            file.end();
-            done.reject(new Error('Failed to download custom browser.'));
-          }
-        }.bind(this));
+        response.on('error', onError);
+        response.on('end', onDone);
+        response.on('close', onDone);
       }.bind(this));
-      request.on('error', function(e) {
-        logger.warn('Got error: ' + e.message);
-        file.end();
-        done.reject(e instanceof Error ? e : new Error(e));
-      }.bind(this));
+      request.on('error', onError);
       request.end();
     } else {
       logger.debug("Custom Browser already available");
@@ -471,7 +471,7 @@ Client.prototype.schedulePrepareJob_ = function(job) {
   } else {
     done.fulfill();
   }
-  return done;
+  return done.promise;
 };
 
 /**
