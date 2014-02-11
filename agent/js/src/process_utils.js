@@ -27,6 +27,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
 var child_process = require('child_process');
+var fs = require('fs');
 var logger = require('logger');
 var net = require('net');
 var system_commands = require('system_commands');
@@ -572,6 +573,40 @@ exports.scheduleAllocatePort = function(app, description, minPort, maxPort) {
   }
   app.schedule((description || 'Allocate port'), findPort);
   return done.promise;
+};
+
+/**
+ * Check if the provided file exists and if it does, delete it.
+ *
+ * @param {webdriver.promise.ControlFlow} app the scheduler.
+ * @param file
+ * @return {webdriver.promise.Promise} fulfill({Object}):
+ */
+exports.scheduleUnlinkIfExists = function(app, file) {
+  return exports.scheduleFunction(app, 'Check if ' + file + ' exists',
+      fs.exists, file).then(function(exists) {
+    if (exists) {
+      return exports.scheduleFunctionNoFault(app,
+              'Unlinking existing file ' + file, fs.unlink, file);
+    }
+  }.bind(this));
+};
+
+/**
+ * Create the requested directory if it doesn't already exist.
+ *
+ * @param {webdriver.promise.ControlFlow} app the scheduler.
+ * @param dir
+ * @return {webdriver.promise.Promise} fulfill({Object}):
+ */
+exports.scheduleCreateDirectory = function(app, dir) {
+  return exports.scheduleFunction(app, 'Check if ' + dir + ' exists', fs.exists,
+      dir).then(function(exists) {
+    if (!exists) {
+      return exports.scheduleFunctionNoFault(app, 'Create Directory ' + dir,
+          fs.mkdir, dir, parseInt('0755', 8));
+    }
+  }.bind(this));
 };
 
 /**

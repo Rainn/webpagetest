@@ -28,7 +28,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 var browser_base = require('browser_base');
 var child_process = require('child_process');
+var crypto = require('crypto');
 var fs = require('fs');
+var http = require('http');
 var logger = require('logger');
 var nopt = require('nopt');
 var path = require('path');
@@ -71,17 +73,19 @@ function Agent(app, client, flags) {
   process_utils.injectWdAppLogging('agent_main', this.app_);
   // The directory to store run result files. Clean it up before+after each run.
   // We want a fixed name, to avoid leaving junk after agent crashes/restarts.
-  var runTempSuffix = flags.deviceSerial || '';
+  var runTempSuffix = flags.name || flags.deviceSerial || '';
   if (!/^[a-z0-9]*$/i.test(runTempSuffix)) {
     throw new Error('--deviceSerial may contain only letters and digits');
   }
   this.runTempDir_ = 'runtmp' + (runTempSuffix ? '_' + runTempSuffix : '');
+  this.workDir_ = 'work' + (runTempSuffix ? '_' + runTempSuffix : '');
   this.wdServer_ = undefined;  // The wd_server child process.
   this.trafficShaper_ = new traffic_shaper.TrafficShaper(this.app_, flags);
 
   // Create a single (separate) instance of the browser for checking status.
   this.browser_ = browser_base.createBrowser(this.app_, flags);
 
+  this.client_.onPrepareJob = this.prepareJob_.bind(this);
   this.client_.onStartJobRun = this.startJobRun_.bind(this);
   this.client_.onAbortJob = this.abortJob_.bind(this);
   this.client_.onIsReady =
@@ -201,6 +205,103 @@ Agent.prototype.scheduleProcessDone_ = function(ipcMsg, job) {
           fs.unlink, ipcMsg.pcapFile);
     }
   }.bind(this));
+};
+
+/**
+ * Handles any pre-processing necessary for the given job.
+ *
+ * @param job
+ * @return {webdriver.promise.Promise} The scheduled promise.
+ * @private
+ */
+Agent.prototype.prepareJob_ = function(job) {
+  'use strict';
+  var done = new webdriver.promise.Deferred();
+  if (job.task.customBrowserUrl && job.task.customBrowserMD5) {
+    var browserName = path.basename(job.task.customBrowserUrl);
+    logger.debug("Custom Browser: " + browserName);
+    process_utils.scheduleCreateDirectory(this.app_, this.workDir_).then(
+        function() {
+      process_utils.scheduleCreateDirectory(this.app_,
+          path.join(this.workDir_, 'browsers')).then(function() {
+        job.customBrowser = path.join(this.workDir_, 'browsers', browserName);
+        process_utils.scheduleFunction(this.app_,
+            'Check if browser exists', fs.exists, job.customBrowser).then(
+            function(exists) {
+          if (!exists) {
+            // TODO(pmeenan): Implement a cleanup that deletes custom browsers
+            // that haven't been used in a while
+            logger.debug("Custom Browser not available, downloading from " +
+                job.task.customBrowserUrl);
+            var tempFile = job.customBrowser + '.tmp';
+            process_utils.scheduleUnlinkIfExists(this.app_, tempFile).then(
+                function() {
+              var active = true;
+              var md5 = crypto.createHash('md5');
+              var file = fs.createWriteStream(tempFile);
+              var onError = function(e) {
+                if (active) {
+                  active = false;
+                  file.end();
+                  process_utils.scheduleUnlinkIfExists(this.app_,
+                      tempFile).then(function() {
+                    e.message = 'Custom browser download failure from ' +
+                        job.task.customBrowserUrl + ': ' + e.message;
+                    logger.warn(e.message);
+                    done.reject(e);
+                  }.bind(this));
+                }
+              }.bind(this);
+              var onDone = function() {
+                if (active) {
+                  active = false;
+                  file.end();
+                  var md5hex = md5.digest('hex').toUpperCase();
+                  logger.debug('Finished download - md5: ' + md5hex);
+                  if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
+                    process_utils.scheduleFunction(this.app_,
+                            'Rename successful browser download',
+                            fs.rename, tempFile, job.customBrowser).then(
+                        function() {
+                      done.fulfill();
+                    }.bind(this), function() {
+                      done.reject(new Error(
+                          'Failed to rename custom browser file'));
+                    }.bind(this));
+                  } else {
+                    process_utils.scheduleUnlinkIfExists(this.app_,
+                        tempFile).then(function() {
+                      done.reject(new Error(
+                          'Failed to download custom browser from ' +
+                          job.task.customBrowserUrl));
+                    }.bind(this));
+                  }
+                }
+              }.bind(this);
+              var request = http.get(job.task.customBrowserUrl,
+                  function(response) {
+                response.pipe(file);
+                response.on('data', function(chunk) {
+                  md5.update(chunk);
+                }.bind(this));
+                response.on('error', onError);
+                response.on('end', onDone);
+                response.on('close', onDone);
+              }.bind(this));
+              request.on('error', onError);
+              request.end();
+            }.bind(this));
+          } else {
+            logger.debug("Custom Browser already available");
+            done.fulfill();
+          }
+        }.bind(this));
+      }.bind(this));
+    }.bind(this));
+  } else {
+    done.fulfill();
+  }
+  return done.promise;
 };
 
 /**

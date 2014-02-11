@@ -27,7 +27,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
 var events = require('events');
-var crypto = require('crypto');
 var fs = require('fs');
 var http = require('http');
 var logger = require('logger');
@@ -36,7 +35,6 @@ var path = require('path');
 var url = require('url');
 var util = require('util');
 var Zip = require('node-zip');
-var webdriver = require('selenium-webdriver');
 
 /** Allow tests to stub out . */
 exports.process = process;
@@ -248,11 +246,11 @@ function Client(app, args) {
   this.timeoutTimer_ = undefined;
   this.currentJob_ = undefined;
   this.jobTimeout = args.jobTimeout || DEFAULT_JOB_TIMEOUT;
+  this.onPrepareJob = undefined;
   this.onStartJobRun = undefined;
   this.onAbortJob = undefined;
   this.onIsReady = undefined;
   this.handlingUncaughtException_ = undefined;
-  this.workDir_ = 'work_' + (args.name || args.deviceSerial);
 
   exports.process.on('uncaughtException', this.onUncaughtException_.bind(this));
 
@@ -374,13 +372,18 @@ Client.prototype.processJobResponse_ = function(responseBody) {
     // ControlFlow has circular references to us through its queue.
     return ('app_' === name) ? '<REDACTED>' : value;
   }));
-  this.schedulePrepareJob_(job).then(function() {
+  this.currentJob_ = job;
+
+  if (this.onPrepareJob) {
+    this.onPrepareJob(job).then(function() {
+      this.startNextRun_(job);
+    }.bind(this), function(e) {
+      job.error = e.message;
+      this.abortJob_(job);
+    }.bind(this));
+  } else {
     this.startNextRun_(job);
-  }.bind(this), function(e) {
-    this.currentJob_ = job;
-    job.error = e.message;
-    this.abortJob_(job);
-  }.bind(this));
+  }
 };
 
 /**
@@ -398,91 +401,12 @@ Client.prototype.abortJob_ = function(job) {
 };
 
 /**
- * Do any pre-processing necessary for the given job.
- * 
- * @param job
- * @return {webdriver.promise.Promise} The scheduled promise.
- * @private
- */
-Client.prototype.schedulePrepareJob_ = function(job) {
-  var done = new webdriver.promise.Deferred();
-  if (job.task.customBrowserUrl && job.task.customBrowserMD5) {
-    var browserName = path.basename(job.task.customBrowserUrl);
-    logger.debug("Custom Browser: " + browserName);
-    if (!fs.existsSync(this.workDir_))
-      fs.mkdirSync(this.workDir_);
-    if (!fs.existsSync(path.join(this.workDir_, '/browsers')))
-      fs.mkdirSync(path.join(this.workDir_, '/browsers'), parseInt('0755', 8));
-    job.customBrowser = path.join(this.workDir_, 'browsers', browserName);
-    if (!fs.existsSync(job.customBrowser)) {
-      // TODO(pmeenan): Implement a cleanup that deletes custom browsers
-      // that haven't been used in a while
-      logger.debug("Custom Browser not available, downloading from " +
-                   job.task.customBrowserUrl);
-      var tempFile = job.customBrowser + '.tmp';
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
-      }
-      var active = true;
-      var md5 = crypto.createHash('md5');
-      var file = fs.createWriteStream(tempFile);
-      var onError = function(e) {
-        if (active) {
-          active = false;
-          file.end();
-          fs.unlinkSync(tempFile);
-          e.message = 'Custom browser download failure from ' +
-                      job.task.customBrowserUrl + ': ' + e.message;
-          logger.warn(e.message);
-          done.reject(e);
-        }
-      }.bind(this);
-      var onDone = function() {
-        if (active) {
-          active = false;
-          file.end();
-          var md5hex = md5.digest('hex').toUpperCase();
-          logger.debug('Finished download - md5: ' + md5hex);
-          if (md5hex == job.task.customBrowserMD5.toUpperCase()) {
-            fs.renameSync(tempFile, job.customBrowser);
-            done.fulfill();
-          } else {
-            fs.unlinkSync(tempFile);
-            done.reject(new Error('Failed to download custom browser from ' +
-                                  job.task.customBrowserUrl));
-          }
-        }
-      }.bind(this);
-      var request = http.get(job.task.customBrowserUrl, function(response) {
-        response.pipe(file);
-        response.on('data', function(chunk) {
-          md5.update(chunk);
-        }.bind(this));
-        response.on('error', onError);
-        response.on('end', onDone);
-        response.on('close', onDone);
-      }.bind(this));
-      request.on('error', onError);
-      request.end();
-    } else {
-      logger.debug("Custom Browser already available");
-      done.fulfill();
-    }
-  } else {
-    done.fulfill();
-  }
-  return done.promise;
-};
-
-/**
  * @param {Job} job the job to start/continue.
  * @private
  */
 Client.prototype.startNextRun_ = function(job) {
   'use strict';
   job.error = undefined;  // Reset previous run's error, if any.
-  // For comparison in finishRun_()
-  this.currentJob_ = job;
   // Set up job timeout
   this.timeoutTimer_ = global.setTimeout(function() {
     job.error = 'timeout';
