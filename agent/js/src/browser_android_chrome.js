@@ -51,7 +51,9 @@ var CHROME_FLAGS = [
     // Suppress location JS API to avoid a location prompt obscuring the page.
     '--disable-geolocation',
     // Disable external URL handlers from opening
-    '--disable-external-intent-requests'
+    '--disable-external-intent-requests',
+    // Disable UI bars (location, debugging, etc)
+    '--disable-infobars'
   ];
 
 var KNOWN_BROWSERS = {
